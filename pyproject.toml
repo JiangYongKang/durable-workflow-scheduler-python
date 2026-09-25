@@ -6,6 +6,15 @@ dependencies = [
     "fastapi[standard]>=0.141.1",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+log_cli = false
+
 [[tool.uv.index]]
 url = "https://mirrors.aliyun.com/pypi/simple/"
 default = true
