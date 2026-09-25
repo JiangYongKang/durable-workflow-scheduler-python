@@ -9,3 +9,24 @@ dependencies = [
 [[tool.uv.index]]
 url = "https://mirrors.aliyun.com/pypi/simple/"
 default = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+log_level = "INFO"
+log_format = "%(asctime)s %(levelname)s [%(threadName)s] %(name)s: %(message)s"
+log_date_format = "%H:%M:%S"
+log_cli = false
+log_cli_level = "INFO"
+# Tests also print a per-instance audit dump (tests.conftest.dump_audit):
+# run with `pytest -o log_cli=true` to see trigger source / transitions /
+# decision basis live in the console.
+filterwarnings = [
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+    "ignore:The anyio.abc.BlockingPortal alias is deprecated",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
