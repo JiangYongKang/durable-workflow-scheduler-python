@@ -4,7 +4,6 @@
 """
 from __future__ import annotations
 
-import logging
 import threading
 
 import pytest
@@ -17,17 +16,14 @@ from scheduler.errors import (
     UnknownTaskError,
 )
 from scheduler.models import (
-    RunState,
     RetryPolicy,
+    RunState,
     TaskDef,
     TaskState,
     TriggerSource,
     WorkflowDef,
 )
 from scheduler.store import StateStore
-
-logging.basicConfig(level=logging.INFO,
-                    format="TEST %(asctime)s %(message)s", force=True)
 
 
 class FakeClock:
@@ -335,7 +331,7 @@ def test_timeout_marked_distinguishable_from_failure(env):
     assert tasks[0].error_kind == "timeout"
 
     # 业务失败与超时可区分
-    run2 = eng.trigger("slow", "w2")
+    eng.trigger("slow", "w2")
     clock.advance(20)
     eng.tick()
     # 超时优先；另用致命失败验证 FAILED 分支

@@ -15,21 +15,29 @@ class TaskState(str, enum.Enum):
     FAILED = "FAILED"          # 业务失败且重试耗尽 / 不可重试（终态）
     BLOCKED = "BLOCKED"        # 上游失败传播，被阻止启动（终态）
     TIMEOUT = "TIMEOUT"        # 超过实例时限被标记（终态）
+    CANCELLED = "CANCELLED"    # 实例被人工作废，未完成任务随之收尾（终态）
 
 
 class RunState(str, enum.Enum):
     """流程实例的状态机。"""
 
     RUNNING = "RUNNING"
+    PAUSED = "PAUSED"          # 人工暂停：保留进度，不参与调度/恢复，等待恢复
     SUCCEEDED = "SUCCEEDED"    # 全部任务成功（终态）
     FAILED = "FAILED"          # 存在业务失败（终态）
     TIMEOUT = "TIMEOUT"        # 超时导致终止（终态）
+    CANCELLED = "CANCELLED"    # 人工作废（终态），与业务失败/超时明确区分
 
 
 TERMINAL_TASK_STATES = frozenset(
-    {TaskState.SUCCEEDED, TaskState.FAILED, TaskState.BLOCKED, TaskState.TIMEOUT}
+    {TaskState.SUCCEEDED, TaskState.FAILED, TaskState.BLOCKED,
+     TaskState.TIMEOUT, TaskState.CANCELLED}
 )
-TERMINAL_RUN_STATES = frozenset({RunState.SUCCEEDED, RunState.FAILED, RunState.TIMEOUT})
+TERMINAL_RUN_STATES = frozenset(
+    {RunState.SUCCEEDED, RunState.FAILED, RunState.TIMEOUT, RunState.CANCELLED}
+)
+# 仍占用窗口、不允许再次重跑的状态（暂停也是活跃尝试，只是不被推进）
+ACTIVE_RUN_STATES = frozenset({RunState.RUNNING, RunState.PAUSED})
 
 
 class TriggerSource(str, enum.Enum):
@@ -39,6 +47,7 @@ class TriggerSource(str, enum.Enum):
     SCHEDULE = "SCHEDULE"      # 调度窗口触发
     BACKFILL = "BACKFILL"      # 时间窗补齐
     RECOVERY = "RECOVERY"      # 进程重启后的恢复推进
+    RERUN = "RERUN"            # 终态窗口的人工重跑（新尝试）
 
 
 @dataclass(frozen=True)
@@ -81,6 +90,7 @@ class RunInstance:
     window: str                 # 调度窗口标识（如 "2026-09-25"），用于补齐去重
     source: TriggerSource
     state: RunState = RunState.RUNNING
+    attempt: int = 1            # 同一窗口的尝试序号：首次为 1，重跑递增
     created_at: float = 0.0
     deadline: float = 0.0
     finished_at: float | None = None

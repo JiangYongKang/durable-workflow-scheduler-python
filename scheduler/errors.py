@@ -24,3 +24,11 @@ class FatalTaskError(Exception):
     """任务执行中的不可重试错误：立即置为 FAILED，不再重试。"""
 
     kind = "fatal"
+
+
+class RunNotFoundError(WorkflowError):
+    """指定实例（或窗口下的尝试）不存在。"""
+
+
+class RunControlError(WorkflowError):
+    """人工操作（作废 / 暂停 / 恢复 / 重跑）不满足当前状态前提。"""
