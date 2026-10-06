@@ -14,6 +14,14 @@ class UnknownTaskError(WorkflowError):
     """依赖引用了不存在的任务。"""
 
 
+class UnknownRunError(WorkflowError):
+    """操作的运行实例不存在。"""
+
+
+class InvalidTransitionError(WorkflowError):
+    """运维操作与实例当前状态不匹配（如暂停已终态的实例）。"""
+
+
 class RetryableTaskError(Exception):
     """任务执行中的可重试错误：将按退避策略重试，直至次数上限。"""
 

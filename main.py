@@ -4,14 +4,16 @@ from __future__ import annotations
 import logging
 import os
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from scheduler.engine import Engine
 from scheduler.errors import (
     CycleDetectedError,
     FatalTaskError,
+    InvalidTransitionError,
     RetryableTaskError,
+    UnknownRunError,
     UnknownTaskError,
 )
 from scheduler.models import (
@@ -68,6 +70,15 @@ class BackfillIn(BaseModel):
     windows: list[str]
 
 
+class RerunIn(BaseModel):
+    workflow: str
+    window: str
+
+
+class CancelIn(BaseModel):
+    reason: str = "人为作废"
+
+
 def _task_dto(task) -> dict:
     return {"task": task.task_name, "state": task.state.value,
             "attempts": task.attempts, "error": task.error,
@@ -77,6 +88,7 @@ def _task_dto(task) -> dict:
 def _run_dto(run: RunState, tasks: list | None = None) -> dict:
     dto = {"run_id": run.run_id, "workflow": run.workflow_name,
            "window": run.window, "source": run.source.value,
+           "attempt": run.attempt,
            "state": run.state.value, "terminal": run.state in TERMINAL_RUN_STATES,
            "failure_reason": run.failure_reason}
     if tasks is not None:
@@ -160,6 +172,59 @@ def get_run(run_id: str):
         return {"found": False}
     run, tasks = status
     return {"found": True, **_run_dto(run, tasks)}
+
+
+# ---- 运维操作：作废 / 暂停 / 恢复 / 重跑 ----
+def _ops_call(fn, *args):
+    try:
+        return fn(*args)
+    except UnknownRunError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except InvalidTransitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.post("/runs/{run_id}/cancel")
+def cancel_run(run_id: str, body: CancelIn | None = None):
+    """作废未收尾的实例：立即停止推进，已完成步骤保留，结果与失败/超时区分。"""
+    reason = body.reason if body else "人为作废"
+    run = _ops_call(engine.cancel, run_id, reason)
+    fresh, tasks = engine.get_status(run.run_id)
+    return _run_dto(fresh, tasks)
+
+
+@app.post("/runs/{run_id}/pause")
+def pause_run(run_id: str):
+    """暂停运行中的实例：停止推进，进度与重试节奏保留。"""
+    run = _ops_call(engine.pause, run_id)
+    fresh, tasks = engine.get_status(run.run_id)
+    return _run_dto(fresh, tasks)
+
+
+@app.post("/runs/{run_id}/resume")
+def resume_run(run_id: str):
+    """恢复暂停中的实例：从暂停处继续推进。"""
+    run = _ops_call(engine.resume, run_id)
+    engine.tick()
+    fresh, tasks = engine.get_status(run.run_id)
+    return _run_dto(fresh, tasks)
+
+
+@app.post("/rerun")
+def rerun(body: RerunIn):
+    """重跑已收尾的窗口：产生新一次尝试，历史结果保留；并发/重复请求去重。"""
+    run = engine.rerun(body.workflow, body.window)
+    engine.tick()
+    fresh, tasks = engine.get_status(run.run_id)
+    return _run_dto(fresh, tasks)
+
+
+@app.get("/workflows/{workflow}/windows/{window}/runs")
+def list_attempts(workflow: str, window: str):
+    """列出该窗口的全部尝试（含历史重跑结果），便于对比两次运行。"""
+    runs = store.list_attempts(workflow, window)
+    return {"workflow": workflow, "window": window,
+            "attempts": [_run_dto(r) for r in runs]}
 
 
 if __name__ == "__main__":

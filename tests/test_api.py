@@ -72,3 +72,70 @@ def test_backfill_dedup_and_recover(client):
 
 def test_unknown_run_returns_not_found(client):
     assert client.get("/runs/nope").json() == {"found": False}
+
+
+def _register_flaky(client, name="flaky"):
+    """注册一个会可重试失败的流程：触发后实例停留在 RUNNING（退避中）。"""
+    client.post("/workflows", json={"name": name, "tasks": [
+        {"name": "f", "max_attempts": 3, "backoff_seconds": 100},
+    ]})
+    client.post("/workflows/handlers", json={
+        "task": "f", "succeed": False, "fatal": False})
+
+
+def test_pause_resume_cancel_via_api(client):
+    _register_flaky(client)
+    r = client.post("/trigger", json={"workflow": "flaky", "window": "d1"}).json()
+    assert r["state"] == "RUNNING"  # 退避中，实例仍在运行
+
+    p = client.post("/runs/flaky:d1/pause").json()
+    assert p["state"] == "PAUSED" and p["terminal"] is False
+    # 暂停中 tick 不推进
+    client.post("/tick")
+    assert client.get("/runs/flaky:d1").json()["state"] == "PAUSED"
+
+    # 重复暂停 -> 409
+    assert client.post("/runs/flaky:d1/pause").status_code == 409
+
+    rs = client.post("/runs/flaky:d1/resume").json()
+    assert rs["state"] == "RUNNING"
+
+    c = client.post("/runs/flaky:d1/cancel",
+                    json={"reason": "人工介入"}).json()
+    assert c["state"] == "CANCELLED" and c["terminal"] is True
+    assert c["failure_reason"].startswith("cancelled:")
+    assert c["tasks"][0]["state"] == "CANCELLED"
+    # 已收尾不能再作废/暂停
+    assert client.post("/runs/flaky:d1/cancel").status_code == 409
+    assert client.post("/runs/flaky:d1/pause").status_code == 409
+    # 不存在的实例 -> 404
+    assert client.post("/runs/flaky:ghost/cancel").status_code == 404
+
+
+def test_rerun_via_api_keeps_history(client):
+    _register(client)  # wf: a -> b
+    client.post("/workflows/handlers",
+                json={"task": "a", "succeed": False, "error": "v1 broken"})
+    client.post("/workflows/handlers", json={"task": "b", "succeed": True})
+    r1 = client.post("/trigger", json={"workflow": "wf", "window": "d1"}).json()
+    assert r1["state"] == "FAILED" and r1["attempt"] == 1
+
+    # 修复后重跑：新尝试成功，历史保留
+    client.post("/workflows/handlers", json={"task": "a", "succeed": True})
+    r2 = client.post("/rerun", json={"workflow": "wf", "window": "d1"}).json()
+    assert r2["state"] == "SUCCEEDED"
+    assert r2["attempt"] == 2 and r2["source"] == "RERUN"
+    assert r2["run_id"] == "wf:d1#2"
+
+    old = client.get("/runs/wf:d1").json()
+    assert old["state"] == "FAILED" and "v1 broken" in old["failure_reason"]
+
+    attempts = client.get("/workflows/wf/windows/d1/runs").json()["attempts"]
+    assert [(a["attempt"], a["state"]) for a in attempts] == [
+        (1, "FAILED"), (2, "SUCCEEDED")]
+
+    # 普通触发仍去重到最新尝试，不产生第三次
+    r3 = client.post("/trigger", json={"workflow": "wf", "window": "d1"}).json()
+    assert r3["run_id"] == "wf:d1#2"
+    assert len(client.get("/workflows/wf/windows/d1/runs")
+               .json()["attempts"]) == 2
